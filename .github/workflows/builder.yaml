@@ -1,0 +1,324 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - 'master'
+      - 'releases/**'
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  tagname:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag }}
+    steps:
+      - if: github.event_name == 'workflow_dispatch'
+        run: echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_ENV
+
+      - if: github.event_name == 'schedule'
+        run: echo 'TAG_NAME=nightly' >> $GITHUB_ENV
+
+      - if: github.event_name == 'push'
+        run: |
+          TAG_NAME=${{ github.ref }}
+          echo "TAG_NAME=${TAG_NAME#refs/tags/}" >> $GITHUB_ENV
+          
+      - if: github.event_name == 'pull_request'
+        run: echo 'TAG_NAME=debug' >> $GITHUB_ENV
+
+      - id: vars
+        shell: bash
+        run: echo "sha_short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - if: env.TAG_NAME == 'nightly'
+        run: echo 'TAG_NAME=nightly-${{ steps.vars.outputs.sha_short }}' >> $GITHUB_ENV
+
+      - id: tag
+        run: echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+  
+  # windows:
+  #   runs-on: windows-latest
+  #   needs: tagname
+  #   env:
+  #     RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+
+  #   defaults:
+  #     run:
+  #       shell: bash
+
+  #   steps:
+  #     - uses: actions/checkout@v3
+
+  #     - name: Update rust
+  #       run: rustup update
+        
+  #     - name: Fetch dependencies
+  #       run: cargo fetch --locked
+
+  #     - name: Build
+  #       run: cargo build --frozen --profile release-lto
+
+  #     - name: Install WiX
+  #       run: nuget install WiX -Version 3.11.2
+
+  #     - name: Crate msi installer
+  #       run: |
+  #         ./WiX.*/tools/candle.exe -arch "x64" -ext WixUIExtension -ext WixUtilExtension \
+  #           -out "./lapce.wixobj" "extra/windows/wix/lapce.wxs"
+  #         ./WiX.*/tools/light.exe -ext WixUIExtension -ext WixUtilExtension \
+  #           -out "./Lapce-windows.msi" -sice:ICE61 -sice:ICE91 \
+  #           "./lapce.wixobj"
+
+  #     - name: Create portable
+  #       shell: pwsh
+  #       run: |
+  #         cargo build --profile release-lto --features lapce-ui/portable
+  #         Compress-Archive ./target/release-lto/lapce.exe ./Lapce-windows-portable.zip
+
+  #     - name: Create lapce-proxy archive
+  #       shell: pwsh
+  #       run: |
+  #         $file = [System.IO.File]::Open((Join-Path $PWD '.\target\release-lto\lapce-proxy.exe'), [System.IO.FileMode]::Open)
+  #         $archive = [System.IO.File]::Create((Join-Path $PWD '.\lapce-proxy-windows-x86_64.gz'))
+  #         $compressor = [System.IO.Compression.GZipStream]::new($archive, [System.IO.Compression.CompressionMode]::Compress)
+  #         $file.CopyTo($compressor)
+  #         Start-Sleep -Seconds 10
+  #         $compressor.close()
+
+  #     - uses: actions/upload-artifact@v3
+  #       with:
+  #         name: lapce-windows
+  #         path: |
+  #           ./lapce-proxy-windows-*.gz
+  #           ./Lapce-windows-portable.zip
+  #           ./Lapce-windows.msi
+  #         retention-days: 1
+
+  linux:
+    runs-on: ubuntu-latest
+    container: ubuntu:18.04
+    needs: tagname
+    env:
+      RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          apt-get -y update
+          apt-get -y install curl gcc pkg-config libssl-dev
+      
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+          profile: minimal
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build
+        run: cargo build --release
+
+      # - name: Gzip
+      #   run: |
+      #     mkdir Lapce
+      #     cp ./target/release-lto/lapce Lapce/
+      #     tar -zcvf ./Lapce-linux.tar.gz Lapce
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: smtp_forward
+          path: |
+            ./target/release/web-room-relay
+          retention-days: 1
+
+  # linux-musl:
+  #   name: Build lapce-proxy for ${{ matrix.platform }}
+  #   runs-on: ubuntu-latest
+  #   needs: tagname
+  #   env:
+  #     RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+  #     CROSS_SYSROOT: /mnt/alpine-${{ matrix.platform }}
+  #     PACKAGES: >
+  #       zlib-static freetype-static fontconfig-static
+  #       libgit2-static libssh2-static openssl-libs-static
+  #       libssl3 gtk+3.0-dev http-parser-dev rustup
+  #       build-base openssl-dev git lld clang
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - triple: x86_64-unknown-linux-musl
+  #           platform: x86_64
+  #         - triple: aarch64-unknown-linux-musl
+  #           platform: aarch64
+  #   steps:
+  #     - uses: actions/checkout@v3
+
+  #     - name: Set up Alpine Linux for ${{ matrix.platform }} (target arch)
+  #       id: alpine-target
+  #       uses: jirutka/setup-alpine@v1
+  #       with:
+  #         arch: ${{ matrix.platform }}
+  #         branch: edge
+  #         packages: ${{ env.PACKAGES }}
+  #         shell-name: alpine-target.sh
+
+  #     - name: Set up Alpine Linux for x86_64 (build arch)
+  #       uses: jirutka/setup-alpine@v1
+  #       with:
+  #         arch: x86_64
+  #         branch: edge
+  #         packages: ${{ env.PACKAGES }}
+  #         volumes: ${{ steps.alpine-target.outputs.root-path }}:${{ env.CROSS_SYSROOT }}
+  #         shell-name: alpine.sh
+
+  #     - name: Install Rust stable toolchain via rustup
+  #       run: rustup-init --target ${{ matrix.triple }} --default-toolchain stable --profile minimal -y
+  #       shell: alpine.sh {0}
+
+  #     - name: Build ${{ matrix.triple }}
+  #       shell: alpine.sh {0}
+  #       env:
+  #         LIBZ_SYS_STATIC: 1
+  #         LIBSSH2_STATIC: 1
+  #         LIBGIT2_STATIC: 1
+  #         OPENSSL_STATIC: 1
+  #         OPENSSL_DIR: ${{ env.CROSS_SYSROOT }}/usr # static/dynamic lib workaround <3
+  #         OPENSSL_NO_VENDOR: 1 # don't even try to build without it on musl
+  #         PKG_CONFIG_ALL_STATIC: 1
+  #         PKG_CONFIG_LIBDIR: ${{ env.CROSS_SYSROOT }}/usr/lib/pkgconfig
+  #         RUSTFLAGS: -C target-feature=+crt-static -C linker=/usr/bin/ld.lld # link runtime static, use universal linker
+  #         CARGO_BUILD_TARGET: ${{ matrix.triple }}
+  #         CARGO_PROFILE_RELEASE_LTO: 'true'
+  #         CARGO_PROFILE_RELEASE_STRIP: symbols # remove unneeded debug stuff
+  #         CARGO_PROFILE_RELEASE_OPT_LEVEL: 's' # optimise for size
+  #         CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1' # optimise each crate
+  #         SYSROOT: /dummy  # workaround for https://github.com/rust-lang/pkg-config-rs/issues/102
+  #         CC: clang
+  #       run: |
+  #         # Workaround for https://github.com/rust-lang/pkg-config-rs/issues/102
+  #         echo -e '#!/bin/sh\nPKG_CONFIG_SYSROOT_DIR=${{ env.CROSS_SYSROOT }} exec pkgconf "$@"' \
+  #             | install -m755 /dev/stdin pkg-config
+  #         export PKG_CONFIG="$(pwd)/pkg-config"
+  #         cargo fetch --locked
+  #         cargo build \
+  #           --frozen \
+  #           --verbose \
+  #           --release \
+  #           --bin lapce-proxy \
+  #           --manifest-path lapce-proxy/Cargo.toml
+
+  #     - name: Gzip
+  #       run: |
+  #         gzip -c ./target/${{ matrix.triple }}/release/lapce-proxy > ./lapce-proxy-linux-${{ matrix.platform }}.gz
+
+  #     - uses: actions/upload-artifact@v3
+  #       with:
+  #         name: lapce-proxy-linux-${{ matrix.platform }}
+  #         path: |
+  #           ./lapce-proxy-linux-*.gz
+  #         retention-days: 1
+
+  # macos:
+  #   runs-on: macos-11
+  #   needs: tagname
+  #   env:
+  #     RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+
+  #     NOTARIZE_USERNAME: ${{ secrets.NOTARIZE_USERNAME }}
+  #     NOTARIZE_PASSWORD: ${{ secrets.NOTARIZE_PASSWORD }}
+
+  #   steps:
+  #     - uses: actions/checkout@v3
+
+  #     - name: Install ARM target
+  #       run: rustup update && rustup target add aarch64-apple-darwin
+
+  #     - name: Import Certificate
+  #       uses: lapce/import-codesign-certs@72dec84923586f8bef2bed09fdb4f9475c8f623d # use updated action, can be dropped once/if upstream is fixed
+  #       with:
+  #         p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+  #         p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+  #     - name: Fetch dependencies
+  #       run: cargo fetch --locked
+
+  #     - name: Make DMG
+  #       run: make dmg-universal
+
+  #     - name: Rename
+  #       run: |
+  #         cp ./target/release-lto/macos/Lapce.dmg ./target/release-lto/macos/Lapce-macos.dmg
+
+  #     - name: Gzip lapce-proxy
+  #       run: |
+  #         gzip -c ./target/x86_64-apple-darwin/release-lto/lapce-proxy > ./target/release-lto/macos/lapce-proxy-darwin-x86_64.gz
+  #         gzip -c ./target/aarch64-apple-darwin/release-lto/lapce-proxy > ./target/release-lto/macos/lapce-proxy-darwin-aarch64.gz
+
+  #     - name: "Notarize Release Build"
+  #       run: |
+  #         npx notarize-cli --file ./target/release-lto/macos/Lapce-macos.dmg --bundle-id io.lapce --asc-provider CYSGAZFR8D
+
+  #     - name: "Staple Release Build"
+  #       uses: lapce/xcode-staple@062485d6eeafe841c18a412f012e80f49e23c517
+  #       with:
+  #         product-path: "./target/release-lto/macos/Lapce-macos.dmg"
+
+  #     - uses: actions/upload-artifact@v3
+  #       with:
+  #         name: lapce-macos
+  #         path: |
+  #           ./target/release-lto/macos/lapce-proxy-darwin-*.gz
+  #           ./target/release-lto/macos/Lapce-macos.dmg
+  #         retention-days: 1
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: [linux]
+    runs-on: ubuntu-latest
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+    steps:
+      # Must perform checkout first, since it deletes the target directory
+      # before running, and would therefore delete the downloaded artifacts
+      - uses: actions/checkout@v3
+
+      - uses: actions/download-artifact@v3          
+      
+      # - if: github.event_name == 'workflow_dispatch'
+      #   run: echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_ENV
+
+      # - if: github.event_name == 'schedule'
+      #   run: echo 'TAG_NAME=nightly' >> $GITHUB_ENV
+
+      # - if: github.event_name == 'push'
+      #   run: |
+      #     TAG_NAME=${{ github.ref }}
+      #     echo "TAG_NAME=${TAG_NAME#refs/tags/}" >> $GITHUB_ENV
+
+      - name: envset
+        run: |
+          (echo 'SUBJECT=Deepsplit development build';
+           echo 'PRERELEASE=--prerelease';
+           echo 'TAG_NAME=nightly') >> $GITHUB_ENV
+          gh release delete nightly --yes || true
+          git push origin :nightly || true
+
+
+      - name: Publish release
+        env:
+          DEBUG: api
+        run: |
+          gh release create $TAG_NAME $PRERELEASE --title "$TAG_NAME" --target $GITHUB_SHA web-room-relay*/*
