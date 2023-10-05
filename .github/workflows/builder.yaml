@@ -112,7 +112,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get -y update
-          apt-get -y install curl gcc pkg-config libssl-dev
+          apt-get -y install curl gcc pkg-config libssl-dev cmake
       
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
