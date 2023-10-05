@@ -1,19 +1,50 @@
 use anyhow::Result;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
+use tracing::warn;
 use tracing::Instrument;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use wtransport::datagram::Datagram;
 use wtransport::endpoint::IncomingSession;
 use wtransport::tls::Certificate;
+use wtransport::Connection;
 use wtransport::Endpoint;
 use wtransport::ServerConfig;
+
+macro_rules! regex {
+    ($re:literal $(,)?) => {{
+        static RE: once_cell::sync::OnceCell<regex::Regex> = once_cell::sync::OnceCell::new();
+        RE.get_or_init(|| regex::Regex::new($re).unwrap())
+    }};
+}
+
+pub struct Room {
+    id: String,
+    users: Vec<User>,
+}
+
+type MessagePacket = Vec<u8>;
+
+pub struct User {
+    id: String,
+    sender: Sender<MessagePacket>,
+}
+
+static ROOMS: once_cell::sync::OnceCell<Arc<tokio::sync::RwLock<HashMap<String, Room>>>> =
+    once_cell::sync::OnceCell::new();
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logging();
+    ROOMS
+        .set(Arc::new(tokio::sync::RwLock::new(HashMap::new())))
+        .map_err(|_| anyhow::anyhow!("Cant init"))?;
 
     let config = ServerConfig::builder()
         .with_bind_default(4433)
@@ -34,24 +65,80 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_connection(incoming_session: IncomingSession) {
-    let result = handle_connection_impl(incoming_session).await;
+    let (room_id, connection) = match get_connection_from_session(incoming_session).await {
+        Ok(con) => con,
+        Err(err) => {
+            warn!("Errored {err:?}");
+            return;
+        }
+    };
+    let user_id = connection.stable_id().to_string();
+    let (sender, receiver) = tokio::sync::mpsc::channel(20);
+    let user = User {
+        id: user_id.clone(),
+        sender,
+    };
+    let mut rooms: tokio::sync::RwLockWriteGuard<'_, HashMap<String, Room>> =
+        ROOMS.get().unwrap().write().await;
+    if let Some(room) = rooms.get_mut(&room_id) {
+        room.users.push(user);
+    } else {
+        rooms.insert(
+            room_id.clone(),
+            Room {
+                id: room_id.clone(),
+                users: vec![user],
+            },
+        );
+    }
+    drop(rooms);
+    let result = handle_connection_impl(&user_id, &room_id, connection, receiver).await;
+    let mut rooms: tokio::sync::RwLockWriteGuard<'_, HashMap<String, Room>> =
+        ROOMS.get().unwrap().write().await;
+    if let Some(room) = rooms.get_mut(&room_id) {
+        if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
+            room.users.remove(user_index);
+        }
+        if room.users.is_empty() {
+            rooms.remove(&room_id);
+        }
+    }
     error!("{:?}", result);
 }
 
-async fn handle_connection_impl(incoming_session: IncomingSession) -> Result<()> {
+async fn get_connection_from_session(
+    incoming_session: IncomingSession,
+) -> Result<(String, Connection)> {
+    let session_request = incoming_session.await?;
+
+    let path = session_request.path().to_owned();
+
+    let reg = regex!(r"(?m)^\/room\/(\w{6})$");
+    if let Some(room_id) = reg.captures(&path).and_then(|cap| cap.get(1)) {
+        let room_id = room_id.as_str();
+        info!(
+            "New session: Authority: '{}', Path: '{}', Room_id: '{}'",
+            session_request.authority(),
+            path,
+            room_id,
+        );
+
+        let connection = session_request.accept().await?;
+        Ok((room_id.to_string(), connection))
+    } else {
+        session_request.not_found().await;
+        Err(anyhow::anyhow!("Not valid path"))
+    }
+}
+async fn handle_connection_impl(
+    user_id: &str,
+    room_id: &str,
+    connection: Connection,
+    mut receiver: Receiver<MessagePacket>,
+) -> Result<()> {
     let mut buffer = vec![0; 65536].into_boxed_slice();
 
     info!("Waiting for session request...");
-
-    let session_request = incoming_session.await?;
-
-    info!(
-        "New session: Authority: '{}', Path: '{}'",
-        session_request.authority(),
-        session_request.path()
-    );
-
-    let connection = session_request.accept().await?;
 
     info!("Waiting for data from client...");
 
@@ -90,11 +177,26 @@ async fn handle_connection_impl(incoming_session: IncomingSession) -> Result<()>
             }
             dgram = connection.receive_datagram() => {
                 let dgram = dgram?;
-                let str_data = std::str::from_utf8(&dgram)?;
-
-                info!("Received (dgram) '{str_data}' from client");
+                let dgram_veg = (&dgram).to_vec();
+                {
+                    let  rooms = ROOMS.get().unwrap().read().await;
+                    if let Some(room) = rooms.get(room_id) {
+                        for user in room.users.iter(){
+                            if user.id != user_id{
+                               if let Err(err) = user.sender.send(dgram_veg.clone()).await{
+                                    warn!("Failed tosend msg {err:?}")
+                               }
+                            }
+                        }
+                    }
+                }
 
                 connection.send_datagram(b"ACK")?;
+            }
+            dragm = receiver.recv() => {
+                if let Some(dragm)= dragm{
+                    connection.send_datagram(&*dragm)?;
+                }
             }
         }
     }

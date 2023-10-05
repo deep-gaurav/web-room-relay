@@ -1024,6 +1024,9 @@ name = "web-room-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "once_cell",
+ "rand",
+ "regex",
  "tokio",
  "tracing",
  "tracing-subscriber",

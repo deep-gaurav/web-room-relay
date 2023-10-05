@@ -1,0 +1,13 @@
+[Unit]
+Description=web room relay service
+After=network.target
+
+[Service]
+User=deep
+WorkingDirectory=/home/deep/web-room-relay
+Environment="PORT=9342"
+ExecStart=/home/deep/web-room-relay/runner.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
