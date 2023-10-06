@@ -137,6 +137,7 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
             );
         }
     }
+    info!("Running room {room_id}");
     let result = handle_connection_impl(user_id, &room_id, connection, receiver, broadcaster).await;
     let rooms = ROOMS.get().unwrap();
     if let Some(mut room) = rooms.get_mut(&room_id) {
@@ -175,6 +176,7 @@ async fn get_connection_from_session(
         );
 
         let connection = session_request.accept().await?;
+        info!("Connection Opened: {room_id}",);
         Ok((room_id.to_string(), connection))
     } else {
         session_request.not_found().await;
