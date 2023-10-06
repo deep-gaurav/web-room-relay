@@ -68,7 +68,9 @@ async fn main() -> Result<()> {
     let (broadcast_sender, broadcast_receiver) = tokio::sync::mpsc::channel(10);
     tokio::spawn(handle_broadcast(broadcast_receiver));
     for id in 0.. {
+        info!("Awaiting new connection request");
         let incoming_session = server.accept().await;
+        info!("Some connecection request received");
         tokio::spawn(
             handle_connection(incoming_session, broadcast_sender.clone())
                 .instrument(info_span!("Connection", id)),
@@ -139,22 +141,29 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
     }
     info!("Running room {room_id}");
     let result = handle_connection_impl(user_id, &room_id, connection, receiver, broadcaster).await;
-    let rooms = ROOMS.get().unwrap();
-    if let Some(mut room) = rooms.get_mut(&room_id) {
-        if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
-            room.users.remove(user_index);
-        }
-        if room.users.is_empty() {
-            rooms.remove(&room_id);
-        } else {
-            let mut send_futures = vec![];
-
-            for user in room.users.iter() {
-                send_futures.push(user.sender.send(Mesagge::UserDisconnected(user_id.clone())))
+    info!("Room has stopped {room_id}");
+    {
+        let rooms = ROOMS.get().unwrap();
+        if let Some(mut room) = rooms.get_mut(&room_id) {
+            if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
+                room.users.remove(user_index);
             }
-            futures::future::join_all(send_futures).await;
+            if room.users.is_empty() {
+                info!("Room empty, deleting room");
+                rooms.remove(&room_id);
+            } else {
+                let mut send_futures = vec![];
+
+                for user in room.users.iter() {
+                    send_futures.push(user.sender.send(Mesagge::UserDisconnected(user_id.clone())))
+                }
+                info!("Notifying {} users of user leaving", send_futures.len());
+                futures::future::join_all(send_futures).await;
+                info!("Notified everyone")
+            }
         }
     }
+    info!("Room cleaned up {room_id}");
     error!("{:?}", result);
 }
 
