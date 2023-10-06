@@ -1,7 +1,10 @@
 use anyhow::Result;
+use futures::stream::FuturesUnordered;
+use futures::Future;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::error;
 use tracing::info;
@@ -29,7 +32,7 @@ pub struct Room {
     users: Vec<User>,
 }
 
-type MessagePacket = Vec<u8>;
+type MessagePacket = Mesagge;
 
 pub struct User {
     id: String,
@@ -38,6 +41,13 @@ pub struct User {
 
 static ROOMS: once_cell::sync::OnceCell<Arc<tokio::sync::RwLock<HashMap<String, Room>>>> =
     once_cell::sync::OnceCell::new();
+
+#[derive(Debug, serde::Serialize)]
+pub enum Mesagge {
+    UserConnected(String),
+    UserDisconnected(String),
+    UserMessage(String, Vec<u8>),
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -81,6 +91,11 @@ async fn handle_connection(incoming_session: IncomingSession) {
     let mut rooms: tokio::sync::RwLockWriteGuard<'_, HashMap<String, Room>> =
         ROOMS.get().unwrap().write().await;
     if let Some(room) = rooms.get_mut(&room_id) {
+        let mut send_futures = vec![];
+        for user in room.users.iter() {
+            send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone())));
+        }
+        futures::future::join_all(send_futures).await;
         room.users.push(user);
     } else {
         rooms.insert(
@@ -101,6 +116,13 @@ async fn handle_connection(incoming_session: IncomingSession) {
         }
         if room.users.is_empty() {
             rooms.remove(&room_id);
+        } else {
+            let mut send_futures = vec![];
+
+            for user in room.users.iter() {
+                send_futures.push(user.sender.send(Mesagge::UserDisconnected(user_id.clone())))
+            }
+            futures::future::join_all(send_futures).await;
         }
     }
     error!("{:?}", result);
@@ -141,7 +163,6 @@ async fn handle_connection_impl(
     info!("Waiting for session request...");
 
     info!("Waiting for data from client...");
-
     loop {
         tokio::select! {
             stream = connection.accept_bi() => {
@@ -183,19 +204,20 @@ async fn handle_connection_impl(
                     if let Some(room) = rooms.get(room_id) {
                         for user in room.users.iter(){
                             if user.id != user_id{
-                               if let Err(err) = user.sender.send(dgram_veg.clone()).await{
+                                let msg = Mesagge::UserMessage(user_id.to_string(),dgram_veg.clone());
+                                if let Err(err) = user.sender.send(msg).await{
                                     warn!("Failed tosend msg {err:?}")
-                               }
+                                }
                             }
                         }
                     }
                 }
-
-                connection.send_datagram(b"ACK")?;
             }
             dragm = receiver.recv() => {
                 if let Some(dragm)= dragm{
-                    connection.send_datagram(&*dragm)?;
+                    if let Ok(bin) = bincode::serialize(&dragm){
+                        connection.send_datagram(&bin)?;
+                    };
                 }
             }
         }
