@@ -1,4 +1,5 @@
 use anyhow::Result;
+use dashmap::DashMap;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ pub struct User {
     sender: Sender<MessagePacket>,
 }
 
-static ROOMS: once_cell::sync::OnceCell<Arc<tokio::sync::RwLock<HashMap<String, Room>>>> =
+static ROOMS: once_cell::sync::OnceCell<Arc<DashMap<String, Room>>> =
     once_cell::sync::OnceCell::new();
 
 #[derive(Debug, serde::Serialize)]
@@ -52,7 +53,7 @@ pub enum Mesagge {
 async fn main() -> Result<()> {
     init_logging();
     ROOMS
-        .set(Arc::new(tokio::sync::RwLock::new(HashMap::new())))
+        .set(Arc::new(DashMap::new()))
         .map_err(|_| anyhow::anyhow!("Cant init"))?;
 
     let config = ServerConfig::builder()
@@ -87,29 +88,28 @@ async fn handle_connection(incoming_session: IncomingSession) {
         id: user_id.clone(),
         sender,
     };
-    let mut rooms: tokio::sync::RwLockWriteGuard<'_, HashMap<String, Room>> =
-        ROOMS.get().unwrap().write().await;
-    if let Some(room) = rooms.get_mut(&room_id) {
-        let mut send_futures = vec![];
-        for user in room.users.iter() {
-            send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone())));
+    {
+        let rooms = ROOMS.get().unwrap();
+        if let Some(mut room) = rooms.get_mut(&room_id) {
+            let mut send_futures = vec![];
+            for user in room.users.iter() {
+                send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone())));
+            }
+            futures::future::join_all(send_futures).await;
+            room.users.push(user);
+        } else {
+            rooms.insert(
+                room_id.clone(),
+                Room {
+                    _id: room_id.clone(),
+                    users: vec![user],
+                },
+            );
         }
-        futures::future::join_all(send_futures).await;
-        room.users.push(user);
-    } else {
-        rooms.insert(
-            room_id.clone(),
-            Room {
-                _id: room_id.clone(),
-                users: vec![user],
-            },
-        );
     }
-    drop(rooms);
     let result = handle_connection_impl(&user_id, &room_id, connection, receiver).await;
-    let mut rooms: tokio::sync::RwLockWriteGuard<'_, HashMap<String, Room>> =
-        ROOMS.get().unwrap().write().await;
-    if let Some(room) = rooms.get_mut(&room_id) {
+    let rooms = ROOMS.get().unwrap();
+    if let Some(mut room) = rooms.get_mut(&room_id) {
         if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
             room.users.remove(user_index);
         }
@@ -199,7 +199,7 @@ async fn handle_connection_impl(
                 let dgram = dgram?;
                 let dgram_veg = (&dgram).to_vec();
                 {
-                    let  rooms = ROOMS.get().unwrap().read().await;
+                    let  rooms = ROOMS.get().unwrap();
                     if let Some(room) = rooms.get(room_id) {
                         for user in room.users.iter(){
                             if user.id != user_id{

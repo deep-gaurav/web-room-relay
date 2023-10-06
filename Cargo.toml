@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.75"
 bincode = "1.3.3"
+dashmap = "5.5.3"
 futures = "0.3.28"
 once_cell = "1.18.0"
 rand = "0.8.5"
