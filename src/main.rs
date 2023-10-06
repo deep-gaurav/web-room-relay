@@ -33,6 +33,7 @@ pub struct Room {
 }
 
 type MessagePacket = Mesagge;
+type BroadCastMsg = (String, u32, Vec<u8>);
 
 pub struct User {
     id: u32,
@@ -64,16 +65,46 @@ async fn main() -> Result<()> {
     let server = Endpoint::server(config)?;
 
     info!("Server ready!");
-
+    let (broadcast_sender, broadcast_receiver) = tokio::sync::mpsc::channel(10);
+    tokio::spawn(handle_broadcast(broadcast_receiver));
     for id in 0.. {
         let incoming_session = server.accept().await;
-        tokio::spawn(handle_connection(incoming_session).instrument(info_span!("Connection", id)));
+        tokio::spawn(
+            handle_connection(incoming_session, broadcast_sender.clone())
+                .instrument(info_span!("Connection", id)),
+        );
     }
 
     Ok(())
 }
 
-async fn handle_connection(incoming_session: IncomingSession) {
+async fn handle_broadcast(mut reciver: Receiver<BroadCastMsg>) {
+    loop {
+        let msg = reciver.recv().await;
+        if let Some(msg) = msg {
+            {
+                if let Some(room) = ROOMS.get() {
+                    let room = room.get(&msg.0);
+
+                    if let Some(room) = room {
+                        let mut futures = vec![];
+
+                        for user in room.users.iter() {
+                            if user.id != msg.1 {
+                                futures.push(
+                                    user.sender.send(Mesagge::UserMessage(msg.1, msg.2.clone())),
+                                );
+                            }
+                        }
+                        futures::future::join_all(futures).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sender<BroadCastMsg>) {
     let (room_id, connection) = match get_connection_from_session(incoming_session).await {
         Ok(con) => con,
         Err(err) => {
@@ -106,7 +137,7 @@ async fn handle_connection(incoming_session: IncomingSession) {
             );
         }
     }
-    let result = handle_connection_impl(user_id, &room_id, connection, receiver).await;
+    let result = handle_connection_impl(user_id, &room_id, connection, receiver, broadcaster).await;
     let rooms = ROOMS.get().unwrap();
     if let Some(mut room) = rooms.get_mut(&room_id) {
         if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
@@ -155,6 +186,7 @@ async fn handle_connection_impl(
     room_id: &str,
     connection: Connection,
     mut receiver: Receiver<MessagePacket>,
+    broadcaster: Sender<BroadCastMsg>,
 ) -> Result<()> {
     let mut buffer = vec![0; 65536].into_boxed_slice();
 
@@ -197,18 +229,8 @@ async fn handle_connection_impl(
             dgram = connection.receive_datagram() => {
                 let dgram = dgram?;
                 let dgram_veg = (&dgram).to_vec();
-                {
-                    let  rooms = ROOMS.get().unwrap();
-                    if let Some(room) = rooms.get(room_id) {
-                        for user in room.users.iter(){
-                            if user.id != user_id{
-                                let msg = Mesagge::UserMessage(user_id,dgram_veg.clone());
-                                if let Err(err) = user.sender.send(msg).await{
-                                    warn!("Failed tosend msg {err:?}")
-                                }
-                            }
-                        }
-                    }
+                if let Err(err)=broadcaster.send((room_id.to_string(),user_id, dgram_veg)).await{
+                    warn!("Broadcast error {err:?}")
                 }
             }
             dragm = receiver.recv() => {
