@@ -39,8 +39,7 @@ pub struct User {
     sender: Sender<MessagePacket>,
 }
 
-static ROOMS: once_cell::sync::OnceCell<Arc<DashMap<String, Room>>> =
-    once_cell::sync::OnceCell::new();
+static ROOMS: once_cell::sync::OnceCell<DashMap<String, Room>> = once_cell::sync::OnceCell::new();
 
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
@@ -53,7 +52,7 @@ pub enum Mesagge {
 async fn main() -> Result<()> {
     init_logging();
     ROOMS
-        .set(Arc::new(DashMap::new()))
+        .set(DashMap::new())
         .map_err(|_| anyhow::anyhow!("Cant init"))?;
 
     let config = ServerConfig::builder()
