@@ -1,10 +1,9 @@
 use anyhow::Result;
-use futures::stream::FuturesUnordered;
-use futures::Future;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::error::SendError;
+
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::error;
 use tracing::info;
@@ -28,7 +27,7 @@ macro_rules! regex {
 }
 
 pub struct Room {
-    id: String,
+    _id: String,
     users: Vec<User>,
 }
 
@@ -101,7 +100,7 @@ async fn handle_connection(incoming_session: IncomingSession) {
         rooms.insert(
             room_id.clone(),
             Room {
-                id: room_id.clone(),
+                _id: room_id.clone(),
                 users: vec![user],
             },
         );
