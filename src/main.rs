@@ -35,7 +35,7 @@ pub struct Room {
 type MessagePacket = Mesagge;
 
 pub struct User {
-    id: String,
+    id: u32,
     sender: Sender<MessagePacket>,
 }
 
@@ -43,9 +43,9 @@ static ROOMS: once_cell::sync::OnceCell<DashMap<String, Room>> = once_cell::sync
 
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
-    UserConnected(String),
-    UserDisconnected(String),
-    UserMessage(String, Vec<u8>),
+    UserConnected(u32),
+    UserDisconnected(u32),
+    UserMessage(u32, Vec<u8>),
 }
 
 #[tokio::main]
@@ -81,10 +81,10 @@ async fn handle_connection(incoming_session: IncomingSession) {
             return;
         }
     };
-    let user_id = connection.stable_id().to_string();
+    let user_id = rand::random();
     let (sender, receiver) = tokio::sync::mpsc::channel(20);
     let user = User {
-        id: user_id.clone(),
+        id: user_id,
         sender,
     };
     {
@@ -106,7 +106,7 @@ async fn handle_connection(incoming_session: IncomingSession) {
             );
         }
     }
-    let result = handle_connection_impl(&user_id, &room_id, connection, receiver).await;
+    let result = handle_connection_impl(user_id, &room_id, connection, receiver).await;
     let rooms = ROOMS.get().unwrap();
     if let Some(mut room) = rooms.get_mut(&room_id) {
         if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
@@ -151,7 +151,7 @@ async fn get_connection_from_session(
     }
 }
 async fn handle_connection_impl(
-    user_id: &str,
+    user_id: u32,
     room_id: &str,
     connection: Connection,
     mut receiver: Receiver<MessagePacket>,
@@ -202,7 +202,7 @@ async fn handle_connection_impl(
                     if let Some(room) = rooms.get(room_id) {
                         for user in room.users.iter(){
                             if user.id != user_id{
-                                let msg = Mesagge::UserMessage(user_id.to_string(),dgram_veg.clone());
+                                let msg = Mesagge::UserMessage(user_id,dgram_veg.clone());
                                 if let Err(err) = user.sender.send(msg).await{
                                     warn!("Failed tosend msg {err:?}")
                                 }
