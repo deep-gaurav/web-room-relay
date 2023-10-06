@@ -1,5 +1,6 @@
 use anyhow::Result;
 use dashmap::DashMap;
+use tokio::sync::RwLock;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +41,8 @@ pub struct User {
     sender: Sender<MessagePacket>,
 }
 
-static ROOMS: once_cell::sync::OnceCell<DashMap<String, Room>> = once_cell::sync::OnceCell::new();
+static ROOMS: once_cell::sync::OnceCell<Arc<RwLock<HashMap<String, Room>>>> =
+    once_cell::sync::OnceCell::new();
 
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
@@ -53,7 +55,7 @@ pub enum Mesagge {
 async fn main() -> Result<()> {
     init_logging();
     ROOMS
-        .set(DashMap::new())
+        .set(Arc::new(RwLock::new(HashMap::new())))
         .map_err(|_| anyhow::anyhow!("Cant init"))?;
 
     let config = ServerConfig::builder()
@@ -86,6 +88,7 @@ async fn handle_broadcast(mut reciver: Receiver<BroadCastMsg>) {
         if let Some(msg) = msg {
             {
                 if let Some(room) = ROOMS.get() {
+                    let room = room.read().await;
                     let room = room.get(&msg.0);
 
                     if let Some(room) = room {
@@ -121,8 +124,8 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
         sender,
     };
     {
-        let rooms = ROOMS.get().unwrap();
-        if let Some(mut room) = rooms.get_mut(&room_id) {
+        let mut rooms = ROOMS.get().unwrap().write().await;
+        if let Some(room) = rooms.get_mut(&room_id) {
             let mut send_futures = vec![];
             for user in room.users.iter() {
                 send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone())));
@@ -143,14 +146,15 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
     let result = handle_connection_impl(user_id, &room_id, connection, receiver, broadcaster).await;
     info!("Room has stopped {room_id}");
     {
-        let rooms = ROOMS.get().unwrap();
-        if let Some(mut room) = rooms.get_mut(&room_id) {
+        let mut rooms = ROOMS.get().unwrap().write().await;
+        if let Some(room) = rooms.get_mut(&room_id) {
             if let Some(user_index) = room.users.iter().position(|el| el.id == user_id) {
                 room.users.remove(user_index);
             }
             if room.users.is_empty() {
                 info!("Room empty, deleting room");
                 rooms.remove(&room_id);
+                info!("Room removed");
             } else {
                 let mut send_futures = vec![];
 
