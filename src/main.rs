@@ -197,6 +197,7 @@ async fn get_connection_from_session(
         Err(anyhow::anyhow!("Not valid path"))
     }
 }
+
 async fn handle_connection_impl(
     user_id: u32,
     room_id: &str,
@@ -207,13 +208,18 @@ async fn handle_connection_impl(
     let mut buffer = vec![0; 65536].into_boxed_slice();
 
     info!("Waiting for session request...");
-    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)) {
-        info!("Sending room user id to {user_id}");
-        connection.send_datagram(&bin)?;
-    };
+
     info!("Waiting for data from client...");
+    let mut received_data = false;
     loop {
         tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if !received_data{
+                    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)){
+                        connection.send_datagram(&bin)?;
+                    };
+                }
+            }
             stream = connection.accept_bi() => {
                 let mut stream = stream?;
                 info!("Accepted BI stream");
@@ -246,6 +252,7 @@ async fn handle_connection_impl(
                 stream.write_all(b"ACK").await?;
             }
             dgram = connection.receive_datagram() => {
+                received_data = true;
                 let dgram = dgram?;
                 let dgram_veg = (&dgram).to_vec();
                 if let Err(err)=broadcaster.send((room_id.to_string(),user_id, dgram_veg)).await{
