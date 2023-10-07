@@ -46,6 +46,7 @@ static ROOMS: once_cell::sync::OnceCell<Arc<RwLock<HashMap<String, Room>>>> =
 
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
+    RoomJoined(u32),
     UserConnected(u32),
     UserDisconnected(u32),
     UserMessage(u32, Vec<u8>),
@@ -206,7 +207,9 @@ async fn handle_connection_impl(
     let mut buffer = vec![0; 65536].into_boxed_slice();
 
     info!("Waiting for session request...");
-
+    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)) {
+        connection.send_datagram(&bin)?;
+    };
     info!("Waiting for data from client...");
     loop {
         tokio::select! {
