@@ -208,6 +208,7 @@ async fn handle_connection_impl(
 
     info!("Waiting for session request...");
     if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)) {
+        info!("Sending room user id to {user_id}");
         connection.send_datagram(&bin)?;
     };
     info!("Waiting for data from client...");
