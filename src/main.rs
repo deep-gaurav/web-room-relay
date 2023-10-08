@@ -245,22 +245,10 @@ async fn handle_connection_impl(
             }
             dgram = connection.receive_datagram() => {
                 if !opened_uni {
-                    let open = connection.open_uni().await;
-                    opened_uni = true;
-                    tokio::spawn(async move {
-                        let Ok(uni_stream) = open else{
-                            return;
-                        };
-                        let Ok(mut uni_stream) = uni_stream.await else {
-                            return;
-                        };
-                        if let Err(err) = uni_stream.write_all(bincode::serialize(&Mesagge::RoomJoined(user_id)).unwrap().as_slice()).await{
-                            warn!("Send room error {err:?}");
-                        };
-                        if let Err(err) = uni_stream.finish().await {
-                            warn!("Cant close {err:?}");
-                        };
-                    });
+                    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)){
+                        connection.send_datagram(&bin)?;
+                        opened_uni = true;
+                    };
                 }
                 let dgram = dgram?;
                 let dgram_veg = (&dgram).to_vec();
