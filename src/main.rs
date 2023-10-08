@@ -1,5 +1,4 @@
 use anyhow::Result;
-use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 use std::collections::HashMap;
@@ -210,16 +209,9 @@ async fn handle_connection_impl(
     info!("Waiting for session request...");
 
     info!("Waiting for data from client...");
-    let mut received_data = false;
+    let mut opened_uni = false;
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                if !received_data{
-                    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)){
-                        connection.send_datagram(&bin)?;
-                    };
-                }
-            }
             stream = connection.accept_bi() => {
                 let mut stream = stream?;
                 info!("Accepted BI stream");
@@ -252,7 +244,24 @@ async fn handle_connection_impl(
                 stream.write_all(b"ACK").await?;
             }
             dgram = connection.receive_datagram() => {
-                received_data = true;
+                if !opened_uni {
+                    let open = connection.open_uni().await;
+                    opened_uni = true;
+                    tokio::spawn(async move {
+                        let Ok(uni_stream) = open else{
+                            return;
+                        };
+                        let Ok(mut uni_stream) = uni_stream.await else {
+                            return;
+                        };
+                        if let Err(err) = uni_stream.write_all(bincode::serialize(&Mesagge::RoomJoined(user_id)).unwrap().as_slice()).await{
+                            warn!("Send room error {err:?}");
+                        };
+                        if let Err(err) = uni_stream.finish().await {
+                            warn!("Cant close {err:?}");
+                        };
+                    });
+                }
                 let dgram = dgram?;
                 let dgram_veg = (&dgram).to_vec();
                 if let Err(err)=broadcaster.send((room_id.to_string(),user_id, dgram_veg)).await{
