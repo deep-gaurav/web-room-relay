@@ -19,3 +19,7 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 wtransport = "0.1.6"
 zstd = "0.12.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
