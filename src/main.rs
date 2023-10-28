@@ -46,8 +46,8 @@ static ROOMS: once_cell::sync::OnceCell<Arc<RwLock<HashMap<String, Room>>>> =
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
     RoomJoined(u32),
-    UserConnected(u32),
-    UserDisconnected(u32),
+    UserConnected(u32, Vec<u32>),
+    UserDisconnected(u32, Vec<u32>),
     UserMessage(u32, Vec<u8>),
 }
 
@@ -128,7 +128,8 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
         if let Some(room) = rooms.get_mut(&room_id) {
             let mut send_futures = vec![];
             for user in room.users.iter() {
-                send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone())));
+                let users = room.users.iter().map(|p|p.id).collect();
+                send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone(),users)));
             }
             futures::future::join_all(send_futures).await;
             room.users.push(user);
@@ -159,7 +160,8 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
                 let mut send_futures = vec![];
 
                 for user in room.users.iter() {
-                    send_futures.push(user.sender.send(Mesagge::UserDisconnected(user_id.clone())))
+                    let users = room.users.iter().map(|p|p.id).collect();
+                    send_futures.push(user.sender.send(Mesagge::UserDisconnected(user_id.clone(),users)))
                 }
                 info!("Notifying {} users of user leaving", send_futures.len());
                 futures::future::join_all(send_futures).await;
