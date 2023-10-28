@@ -45,7 +45,7 @@ static ROOMS: once_cell::sync::OnceCell<Arc<RwLock<HashMap<String, Room>>>> =
 
 #[derive(Debug, serde::Serialize)]
 pub enum Mesagge {
-    RoomJoined(u32),
+    RoomJoined(u32, Vec<u32>),
     UserConnected(u32, Vec<u32>),
     UserDisconnected(u32, Vec<u32>),
     UserMessage(u32, Vec<u8>),
@@ -123,13 +123,14 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
         id: user_id,
         sender,
     };
+    let mut users = vec![];
     {
         let mut rooms = ROOMS.get().unwrap().write().await;
         if let Some(room) = rooms.get_mut(&room_id) {
             let mut send_futures = vec![];
             for user in room.users.iter() {
-                let users = room.users.iter().map(|p|p.id).collect();
-                send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone(),users)));
+                users = room.users.iter().map(|p|p.id).collect();
+                send_futures.push(user.sender.send(Mesagge::UserConnected(user_id.clone(),users.clone())));
             }
             futures::future::join_all(send_futures).await;
             room.users.push(user);
@@ -144,7 +145,7 @@ async fn handle_connection(incoming_session: IncomingSession, broadcaster: Sende
         }
     }
     info!("Running room {room_id}");
-    let result = handle_connection_impl(user_id, &room_id, connection, receiver, broadcaster).await;
+    let result = handle_connection_impl(user_id, &room_id, connection, users,receiver, broadcaster).await;
     info!("Room has stopped {room_id}");
     {
         let mut rooms = ROOMS.get().unwrap().write().await;
@@ -203,6 +204,7 @@ async fn handle_connection_impl(
     user_id: u32,
     room_id: &str,
     connection: Connection,
+    users: Vec<u32>,
     mut receiver: Receiver<MessagePacket>,
     broadcaster: Sender<BroadCastMsg>,
 ) -> Result<()> {
@@ -247,7 +249,7 @@ async fn handle_connection_impl(
             }
             dgram = connection.receive_datagram() => {
                 if !opened_uni {
-                    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id)){
+                    if let Ok(bin) = bincode::serialize(&Mesagge::RoomJoined(user_id,users.clone())){
                         connection.send_datagram(&bin)?;
                         opened_uni = true;
                     };
